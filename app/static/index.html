@@ -41,6 +41,9 @@
   .pill.failed { background:#fee2e2; color:#991b1b; }
   .pill.gap { background:#fee2e2; color:#991b1b; }
   .pill.region { background:#dbeafe; color:#1e40af; }
+  .pill.kind-missing_in_warehouse { background:#fef3c7; color:#92400e; }
+  .pill.kind-extra_in_warehouse { background:#ede9fe; color:#5b21b6; }
+  .pill.kind-field_diff { background:#fee2e2; color:#991b1b; }
   .muted { color:var(--muted); font-size:12px; }
   .toast { position:fixed; right:24px; bottom:24px; max-width:420px; z-index:99;
            display:flex; flex-direction:column; gap:8px; }
@@ -65,7 +68,8 @@
   <button data-tab="sales" class="active">① 销售导入 / 明细</button>
   <button data-tab="timeline">② 客户地区有效期</button>
   <button data-tab="jobs">③ 更正与回填任务</button>
-  <button data-tab="demo">④ 演示脚本与自检</button>
+  <button data-tab="recon">④ ERP 日结对账</button>
+  <button data-tab="demo">⑤ 演示脚本与自检</button>
 </nav>
 <main>
   <!-- Tab 1 -->
@@ -143,7 +147,68 @@
     </div>
   </section>
 
-  <!-- Tab 4 -->
+  <!-- Tab 4: ERP 日结对账 -->
+  <section id="tab-recon" style="display:none">
+    <div class="card">
+      <h2>发起日结对账（ERP 快照 vs 仓内销售）</h2>
+      <p class="muted">
+        输入交易日与 ERP 快照 ID，源地址由服务端固定配置。受理时冻结该日仓内源字段副本，
+        之后的导入与地区回填不影响本次对账。分页取数逐页持久提交，断流/坏页/进程中断不留半页，
+        可从原进度续跑；<b>取完全部源数据才发布结论</b>，取数失败只显示可续跑、不发布不完整结论、不修改销售。
+      </p>
+      <div class="row">
+        <label>交易日 <input type="date" id="reconDate" value="2026-08-20"></label>
+        <label>ERP 快照 ID
+          <input id="reconSnap" style="width:200px" value="snap-demo-20260820" placeholder="如 snap-demo-20260820">
+        </label>
+        <button class="act" onclick="createRecon()">受理并开始取数</button>
+        <button class="act sec" onclick="seedReconDemo()">一键准备对账演示数据</button>
+        <button class="act sec" onclick="loadReconJobs()">刷新任务</button>
+        <label class="muted"><input type="checkbox" id="reconAuto" checked> 每 2 秒自动刷新</label>
+      </div>
+      <div id="reconCreateOut" class="muted" style="margin-top:10px"></div>
+    </div>
+
+    <div class="card">
+      <h2>对账任务（进度即已持久提交的页边界）</h2>
+      <table id="reconJobsTable"><thead><tr>
+        <th>任务</th><th>交易日</th><th>ERP快照</th><th>状态</th>
+        <th>已取页</th><th>已取源行</th><th>游标</th><th>仓内冻结行</th>
+        <th>执行进程</th><th>提交时间</th><th>操作 / 错误</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+
+    <div class="card" id="reconResultCard" style="display:none">
+      <h2>对账结论（取完才发布，附双方原值）</h2>
+      <div class="row" style="margin-bottom:10px">
+        <span id="reconSummary" class="stat"></span>
+        <button class="act sec" onclick="filterRecon('')">全部</button>
+        <button class="act sec" onclick="filterRecon('missing_in_warehouse')">仅仓内缺失(漏单)</button>
+        <button class="act sec" onclick="filterRecon('extra_in_warehouse')">仅仓内多出(多单)</button>
+        <button class="act sec" onclick="filterRecon('field_diff')">仅字段差异</button>
+      </div>
+      <table id="reconResultTable"><thead><tr>
+        <th>类型</th><th>销售ID</th><th>差异字段</th><th>ERP 原值</th><th>仓内原值</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+
+    <div class="card">
+      <h2>故障注入（本地 ERP 源，验证续跑与不完整不发布）</h2>
+      <p class="muted">
+        对演示快照注入「中页断流」：前 N 页正常、下一页返回 500；任务转 failed 并保留进度，
+        点任务行的「续跑」即从原游标恢复（续跑请求携带 resume 标记，源端放行）。
+        <code>snapshot-bad</code> 为永久坏页快照，用于验证永远不会发布不完整结论。
+      </p>
+      <div class="row">
+        <label>成功页数 <input type="number" id="failAfter" value="1" min="1" style="width:90px"></label>
+        <button class="act danger" onclick="injectFail()">注入一次性断流</button>
+        <button class="act sec" onclick="resetFail()">清除故障注入</button>
+      </div>
+      <pre id="reconCtlOut" style="margin-top:10px"></pre>
+    </div>
+  </section>
+
+  <!-- Tab 5 -->
   <section id="tab-demo" style="display:none">
     <div class="card">
       <h2>一键准备演示数据</h2>
@@ -176,9 +241,10 @@ let currentVersion = null, currentCid = null;
 document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
   document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
   b.classList.add('active');
-  ['sales','timeline','jobs','demo'].forEach(t =>
+  ['sales','timeline','jobs','recon','demo'].forEach(t =>
     $('tab-' + t).style.display = t === b.dataset.tab ? '' : 'none');
   if (t_check(b,'jobs')) loadJobs();
+  if (t_check(b,'recon')) loadReconJobs();
 });
 function t_check(b, name){ return b.dataset.tab === name; }
 
@@ -326,7 +392,120 @@ async function loadJobs() {
 }
 setInterval(() => { if ($('autoRefresh').checked && $('tab-jobs').style.display !== 'none') loadJobs(); }, 2000);
 
-// ---------- Tab4 ----------
+// ---------- Tab4 ERP 日结对账 ----------
+let reconCurrentJob = null, reconFilter = '';
+async function seedReconDemo() {
+  try {
+    const d = await api('/api/demo/recon-seed', { method:'POST' });
+    $('reconDate').value = d.txn_date; $('reconSnap').value = d.erp_snapshot_id;
+    $('reconCreateOut').textContent =
+      `仓内演示销售已就绪（新增 ${d.inserted}，重复跳过 ${d.skipped_duplicate}）。${d.hint}`;
+    toast('对账演示数据已准备', 'ok');
+  } catch (e) { toast('准备失败：' + e.message, 'err'); }
+}
+const RECON_KIND_TEXT = {
+  missing_in_warehouse: '仓内缺失(漏单)',
+  extra_in_warehouse: '仓内多出(多单)',
+  field_diff: '同ID字段差异'
+};
+async function createRecon() {
+  const body = { txn_date: $('reconDate').value, erp_snapshot_id: $('reconSnap').value.trim() };
+  if (!body.txn_date || !body.erp_snapshot_id) return toast('交易日和快照 ID 必填', 'err');
+  try {
+    const d = await api('/api/recon/jobs', { method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    $('reconCreateOut').innerHTML =
+      `已受理任务 <b>#${d.job_id}</b>（${d.deduped ? '幂等命中已有任务' : '新任务，冻结仓内行 ' +
+      (d.warehouse_rows_frozen ?? '-') + ' 条'}），启动：${JSON.stringify(d.launch)}`;
+    reconCurrentJob = d.job_id;
+    toast('对账任务已受理', 'ok');
+    loadReconJobs();
+  } catch (e) { toast('受理失败：' + e.message, 'err'); }
+}
+async function resumeRecon(id) {
+  try {
+    const d = await api(`/api/recon/jobs/${id}/resume`, { method:'POST' });
+    toast(d.accepted ? `任务 #${id} 已在进程 ${d.worker_host} 续跑` : '未启动：' + d.message,
+          d.accepted ? 'ok' : 'info');
+    loadReconJobs();
+  } catch (e) { toast('续跑失败：' + e.message, 'err'); }
+}
+async function loadReconJobs() {
+  const d = await api('/api/recon/jobs');
+  const tb = $('reconJobsTable').querySelector('tbody'); tb.innerHTML = '';
+  d.jobs.forEach(j => {
+    const tr = document.createElement('tr');
+    const act = j.status === 'failed'
+      ? `<button class="act" onclick="resumeRecon(${j.id})">续跑</button>`
+      : (j.status === 'succeeded'
+          ? `<button class="act sec" onclick="viewReconResults(${j.id})">查看结论</button>`
+          : '<span class="muted">取数中…</span>');
+    tr.innerHTML = `<td>#${j.id}</td><td>${j.txn_date}</td><td>${j.erp_snapshot_id}</td>
+      <td><span class="pill ${j.status}">${j.status}</span></td>
+      <td>${j.pages_fetched}</td><td>${j.source_rows}</td><td>${j.cursor}</td>
+      <td>${j.warehouse_rows ?? '-'}</td><td>${j.worker_host ?? '—'}</td>
+      <td>${j.submitted_at}</td>
+      <td>${act}${j.error ? `<div class="muted" style="max-width:320px">${j.error}</div>` : ''}</td>`;
+    tb.appendChild(tr);
+  });
+  if (reconCurrentJob) {
+    const cur = d.jobs.find(x => x.id === reconCurrentJob);
+    if (cur && cur.status === 'succeeded') viewReconResults(cur.id);
+  }
+}
+async function viewReconResults(id) {
+  reconCurrentJob = id;
+  const job = await api(`/api/recon/jobs/${id}`);
+  $('reconResultCard').style.display = '';
+  $('reconSummary').innerHTML =
+    `任务 #${id}：源行 <b>${job.source_rows}</b> · 仓内冻结 <b>${job.warehouse_rows}</b> ·
+     漏单 <b style="color:#92400e">${job.counts.missing_in_warehouse}</b> ·
+     多单 <b style="color:#5b21b6">${job.counts.extra_in_warehouse}</b> ·
+     字段差异 <b style="color:#991b1b">${job.counts.field_diff}</b>`;
+  await loadReconResults();
+  $('reconResultCard').scrollIntoView({ behavior:'smooth' });
+}
+function filterRecon(kind) { reconFilter = kind; loadReconResults(); }
+async function loadReconResults() {
+  if (!reconCurrentJob) return;
+  const p = reconFilter ? '?kind=' + reconFilter : '';
+  const d = await api(`/api/recon/jobs/${reconCurrentJob}/results${p}`);
+  const tb = $('reconResultTable').querySelector('tbody'); tb.innerHTML = '';
+  d.items.forEach(r => {
+    const tr = document.createElement('tr');
+    const erp = r.erp_raw ? JSON.stringify(r.erp_raw) : '—';
+    const wh = r.warehouse_raw ? JSON.stringify(r.warehouse_raw) : '—';
+    const field = r.kind === 'field_diff'
+      ? `${r.field_name}：<b>${r.erp_value}</b> vs <b>${r.warehouse_value}</b>` : '—';
+    tr.innerHTML = `<td><span class="pill kind-${r.kind}">${RECON_KIND_TEXT[r.kind]}</span></td>
+      <td>${r.sale_id}</td><td>${field}</td><td><code>${erp}</code></td><td><code>${wh}</code></td>`;
+    tb.appendChild(tr);
+  });
+  if (!d.items.length) tb.innerHTML = '<tr><td colspan="5" class="muted">无此类差异</td></tr>';
+}
+async function injectFail() {
+  const after = Number($('failAfter').value || 1);
+  const snap = $('reconSnap').value.trim();
+  try {
+    const r = await fetch(`http://${location.hostname}:9090/control/fail?snapshot_id=${
+      encodeURIComponent(snap)}&after_pages=${after}`, { method:'POST' });
+    $('reconCtlOut').textContent = JSON.stringify(await r.json(), null, 2);
+    toast('断流故障已注入 ERP 源', 'info');
+  } catch (e) {
+    $('reconCtlOut').textContent = '无法直连 ERP 源 :9090（浏览器需能访问该端口）：' + e.message;
+  }
+}
+async function resetFail() {
+  try {
+    const r = await fetch(`http://${location.hostname}:9090/control/reset`, { method:'POST' });
+    $('reconCtlOut').textContent = JSON.stringify(await r.json(), null, 2);
+  } catch (e) { $('reconCtlOut').textContent = '清除失败：' + e.message; }
+}
+setInterval(() => {
+  if ($('reconAuto').checked && $('tab-recon').style.display !== 'none') loadReconJobs();
+}, 2000);
+
+// ---------- Tab5 演示 ----------
 async function seedDemo() {
   const d = await api('/api/demo/seed', { method:'POST' });
   $('demoOut').textContent = JSON.stringify(d, null, 2);

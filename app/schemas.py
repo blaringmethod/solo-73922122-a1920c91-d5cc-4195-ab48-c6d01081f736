@@ -17,3 +17,8 @@ class CorrectionIn(BaseModel):
     backfill_delay_ms: int = Field(0, ge=0, le=300000, description="可调回填延迟，演示回填期间并发")
     fail_simulation: bool = Field(False, description="模拟回填失败：验证失败保留旧版")
     note: str | None = None
+
+
+class ReconIn(BaseModel):
+    txn_date: str = Field(..., min_length=8, description="交易日 YYYY-MM-DD")
+    erp_snapshot_id: str = Field(..., min_length=1, description="ERP 日结快照 ID（快照内容不变）")

@@ -4,10 +4,14 @@ services:
     container_name: sales-web1
     environment:
       SALES_DB: /data/sales.db
+      # 源地址固定配置：两个 Web 进程都指向同一个本地 ERP 分页源
+      ERP_SOURCE_URL: http://erp-source:9000
     volumes:
       - sales_data:/data
     ports:
       - "8081:8000"          # 直连进程 1，便于验证双进程
+    depends_on:
+      - erp-source
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 5s
@@ -19,12 +23,32 @@ services:
     container_name: sales-web2
     environment:
       SALES_DB: /data/sales.db
+      ERP_SOURCE_URL: http://erp-source:9000
     volumes:
       - sales_data:/data
     ports:
       - "8082:8000"          # 直连进程 2
+    depends_on:
+      - erp-source
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  erp-source:
+    build:
+      context: .
+      dockerfile: erp_source/Dockerfile
+    container_name: sales-erp-source
+    environment:
+      ERP_PAGE_SIZE: "5"
+      # 每页延迟：演示「网络等待不持数据库写锁」
+      ERP_DELAY_MS: "300"
+    ports:
+      - "9090:9000"          # 直连 ERP 源，便于注入/清除故障
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:9000/snapshots')"]
       interval: 5s
       timeout: 3s
       retries: 10

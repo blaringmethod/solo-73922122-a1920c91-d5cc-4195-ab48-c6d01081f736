@@ -13,10 +13,10 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import service
+from . import recon, sample_data, service
 from .db import get_conn, init_db
 from .sample_data import CORRECTION_SAMPLE_C001, SAMPLE_CSV, SEED_TIMELINES
-from .schemas import CorrectionIn
+from .schemas import CorrectionIn, ReconIn
 
 app = FastAPI(title="销售地区归属追溯更正平台", version="1.0.0")
 
@@ -334,6 +334,68 @@ def correction_template(customer_id: str) -> dict:
         raise HTTPException(status_code=404, detail="内置模板仅提供 C001 的追溯更正样例")
     return {"customer_id": "C001", "entries": CORRECTION_SAMPLE_C001,
             "说明": "生效日由 2026-04-01 提前到 2026-03-01，S1002(2026-03-31) 回填后应改挂华南"}
+
+
+@app.post("/api/demo/recon-seed")
+def seed_recon_demo() -> dict:
+    """幂等灌入对账演示所需的仓内该日销售（与本地 ERP 快照 snap-demo-20260820 对照）。"""
+    rows = list(csv.DictReader(io.StringIO(sample_data.RECON_DEMO_WAREHOUSE_CSV)))
+    result = service.import_sales(rows)
+    result["txn_date"] = sample_data.RECON_DEMO_DATE
+    result["erp_snapshot_id"] = sample_data.RECON_DEMO_SNAPSHOT
+    result["hint"] = ("到「ERP 日结对账」页用该交易日与快照 ID 发起对账；"
+                      "预期漏单 E9001/E9002、多单 S1009、S1002 金额/S1005 客户/S1007 日期差异")
+    result["served_by"] = socket.gethostname()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# ERP 日结对账（分页取数 / 断点续跑 / 跨进程单实例 / 取完才发布）
+# ---------------------------------------------------------------------------
+
+@app.post("/api/recon/jobs")
+def create_recon_job(payload: ReconIn) -> dict:
+    """受理对账：冻结该日仓内副本并自动开始取数。
+
+    同（交易日，快照）重复受理幂等返回原任务。源地址来自固定配置，
+    不由请求指定。
+    """
+    accepted = recon.accept_job(payload.txn_date, payload.erp_snapshot_id)
+    # 新受理或此前失败/未启动的任务：尝试启动；已在运行/已完成则跳过
+    if accepted["status"] == "succeeded":
+        accepted["launch"] = {"accepted": False, "status": "succeeded",
+                              "message": "任务已完成，结论已发布"}
+    else:
+        accepted["launch"] = recon.try_resume(accepted["job_id"])
+    accepted["served_by"] = socket.gethostname()
+    return accepted
+
+
+@app.post("/api/recon/jobs/{job_id}/resume")
+def resume_recon_job(job_id: int) -> dict:
+    """显式续跑：同任务并发续跑只执行一份（跨进程互斥）。"""
+    out = recon.try_resume(job_id)
+    out["served_by"] = socket.gethostname()
+    return out
+
+
+@app.get("/api/recon/jobs")
+def list_recon_jobs() -> dict:
+    return {"jobs": recon.list_jobs(), "served_by": socket.gethostname()}
+
+
+@app.get("/api/recon/jobs/{job_id}")
+def recon_job_detail(job_id: int) -> dict:
+    d = recon.get_job_detail(job_id)
+    d["served_by"] = socket.gethostname()
+    return d
+
+
+@app.get("/api/recon/jobs/{job_id}/results")
+def recon_results(job_id: int, kind: str | None = None) -> dict:
+    d = recon.get_results(job_id, kind)
+    d["served_by"] = socket.gethostname()
+    return d
 
 
 # ---------------------------------------------------------------------------
